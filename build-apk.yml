@@ -1,0 +1,76 @@
+name: Build AllTool APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Validate and extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s AllTool-source.zip || { echo "::error::AllTool-source.zip missing"; exit 1; }
+          unzip -t AllTool-source.zip
+          mkdir -p src
+          unzip -q AllTool-source.zip -d src
+          SETTINGS_FILE="$(find src -type f -name settings.gradle.kts -print -quit)"
+          test -n "$SETTINGS_FILE" || { echo "::error::settings.gradle.kts not found"; exit 1; }
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          test -f "$PROJECT_DIR/app/build.gradle.kts" || { echo "::error::app/build.gradle.kts not found"; exit 1; }
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$PROJECT_DIR/local.properties"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        run: gradle -p "$PROJECT_DIR" :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -t "$APK"
+          unzip -l "$APK" | grep -q 'AndroidManifest.xml'
+          unzip -l "$APK" | grep -Eq 'classes[0-9]*\.dex'
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AllTool-v1.0.0-debug-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
